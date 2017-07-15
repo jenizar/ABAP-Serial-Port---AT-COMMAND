@@ -1,0 +1,183 @@
+REPORT Z_READ_SERIAL_PORT_USB_MODEM NO STANDARD PAGE HEADING.
+
+DATA : INPUT TYPE C,
+       OUTPUT TYPE C.
+
+  TYPE-POOLS: sabc.
+  INCLUDE ole2incl.
+DATA: o_obj TYPE ole2_object.
+
+DATA: LINE_LENGTH      TYPE I VALUE 254,
+      EDITOR_CONTAINER TYPE REF TO CL_GUI_CUSTOM_CONTAINER,
+      TEXT_EDITOR      TYPE REF TO CL_GUI_TEXTEDIT,
+      TEXT             TYPE STRING.
+
+DATA : ok_code LIKE sy-ucomm,
+       save_ok LIKE sy-ucomm.
+
+DATA : GV_MODE TYPE C VALUE '1',                          " Mode 1 = Write Port,
+       GV_PORT TYPE C LENGTH 2 VALUE '12',                " Port Number (COM1, COM2, . . etc)
+       GV_SETTINGS TYPE C LENGTH 20 VALUE '9600,N,8,1',   " Baud rate : 2400, 9600, 57200, . . etc
+       GV_COMMAND TYPE STRING.
+
+TYPES: BEGIN OF ty_itab,
+         line TYPE C LENGTH 255,
+       END OF ty_itab.
+
+DATA : t_itab TYPE STANDARD TABLE OF ty_itab,
+       ls_itab TYPE ty_itab.
+
+START-OF-SELECTION.
+refresh t_itab[].
+CALL SCREEN 2000.
+
+END-OF-SELECTION.
+
+FORM init.
+  DATA:
+    wa_repid LIKE sy-repid.
+  wa_repid = sy-repid.
+  CALL FUNCTION 'AUTHORITY_CHECK_OLE'
+    EXPORTING
+      program          = wa_repid
+      activity         = sabc_act_call
+      application      = 'MSCOMMLIB.MSCOMM.1'
+    EXCEPTIONS
+      no_authority     = 1
+      activity_unknown = 2
+      OTHERS           = 3.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+  CREATE OBJECT o_obj 'MSCOMMLib.MSComm.1'.
+  IF sy-subrc <> 0.
+    RAISE no_create_object.
+  ENDIF.
+ENDFORM.                    " Init
+"-------------------------------------------------------------------------------"
+FORM open_port USING gv_port gv_settings.
+  SET PROPERTY OF o_obj 'CommPort' = gv_port. "comm port.
+  SET PROPERTY OF o_obj 'Settings' = gv_settings. " settings.
+  SET PROPERTY OF o_obj 'InputLen' = 0.
+  SET PROPERTY OF o_obj 'PortOpen' = 1.
+ENDFORM.                   "open_port
+"-------------------------------------------------------------------------------"
+FORM read_port
+  CHANGING input.
+  DATA:
+    wa_buffer TYPE i.
+  DO 10 TIMES.
+    GET PROPERTY OF o_obj 'InBufferCount' = wa_buffer.
+    IF wa_buffer > 0.
+      GET PROPERTY OF o_obj 'Input' = gv_command. "input.
+      EXIT.
+    ENDIF.
+  ENDDO.
+ENDFORM.                    " read_port
+"-------------------------------------------------------------------------------"
+FORM write_port
+      USING gv_command
+      CHANGING input.
+  DATA:
+    wa_buffer TYPE i.
+
+  SET PROPERTY OF o_obj 'Output' = GV_COMMAND. "output.
+  SET PROPERTY OF o_obj 'Output' = cl_abap_char_utilities=>cr_lf.
+
+  WAIT UP TO 2 SECONDS.
+*refresh t_itab[].
+  DO 10 TIMES.
+    GET PROPERTY OF o_obj 'InBufferCount' = wa_buffer.
+    IF wa_buffer > 0.
+      GET PROPERTY OF o_obj 'Input' = gv_command. " TEXTEDITOR
+      ls_itab = gv_command.
+      append ls_itab to t_itab.
+       CALL METHOD text_editor->set_text_as_r3table
+        EXPORTING
+         table           = t_itab
+        EXCEPTIONS
+         error_dp        = 1
+         error_dp_create = 2
+         others          = 3
+                                                        .
+         IF sy-subrc <> 0.
+*         Implement suitable error handling here
+         ENDIF.
+
+         LOOP AT t_itab into ls_itab.
+
+         ENDLOOP.
+      EXIT.
+    ENDIF.
+  ENDDO.
+ENDFORM.                    "write_port
+"-------------------------------------------------------------------------------"
+FORM final.
+  SET PROPERTY OF o_obj 'PortOpen' = 0.
+  FREE OBJECT o_obj.
+ENDFORM.                    " final
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_2000  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE status_2000 OUTPUT.
+  SET PF-STATUS 'ZSTATUS'.
+  SET TITLEBAR 'TL_2000'.
+  IF TEXT_EDITOR IS INITIAL.
+
+    CREATE OBJECT EDITOR_CONTAINER
+      EXPORTING
+        CONTAINER_NAME              = 'TEXTEDITOR'
+      EXCEPTIONS
+        CNTL_ERROR                  = 1
+        CNTL_SYSTEM_ERROR           = 2
+        CREATE_ERROR                = 3
+        LIFETIME_ERROR              = 4
+        LIFETIME_DYNPRO_DYNPRO_LINK = 5.
+
+    CREATE OBJECT TEXT_EDITOR
+      EXPORTING
+        PARENT                     = EDITOR_CONTAINER
+        WORDWRAP_MODE              = CL_GUI_TEXTEDIT=>WORDWRAP_AT_FIXED_POSITION
+        WORDWRAP_POSITION          = LINE_LENGTH
+        WORDWRAP_TO_LINEBREAK_MODE = CL_GUI_TEXTEDIT=>TRUE.
+
+
+*3)HIDE TOOLBAR AND STATUSBAR
+
+    CALL METHOD TEXT_EDITOR->SET_TOOLBAR_MODE
+      EXPORTING
+        TOOLBAR_MODE = CL_GUI_TEXTEDIT=>FALSE.
+
+    CALL METHOD TEXT_EDITOR->SET_STATUSBAR_MODE
+      EXPORTING
+        STATUSBAR_MODE = CL_GUI_TEXTEDIT=>FALSE.
+
+  ENDIF.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_2000  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE user_command_2000 INPUT.
+ CASE SY-UCOMM.
+    WHEN '&F03' OR '&F12' OR '&F15'.
+      LEAVE PROGRAM.
+    WHEN 'EXECUTE'.
+ PERFORM init.
+  PERFORM open_port USING gv_port gv_settings.
+  IF gv_mode = 0.
+    PERFORM read_port
+      CHANGING input.
+  ENDIF.
+  IF gv_mode = 1.
+    PERFORM write_port
+      USING gv_command
+      CHANGING input.
+  ENDIF.
+  PERFORM final.
+ ENDCASE.
+ENDMODULE.
